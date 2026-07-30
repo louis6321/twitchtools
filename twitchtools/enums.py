@@ -323,7 +323,7 @@ class YoutubeCallback(Enum):
     secret: str
     alert_roles: dict[str, YoutubeCallbackAlertInfo]
     uploads_playlist_id: str
-    subscription_id: str
+    subscription_id: Optional[str]
     expiry_time: int
 
 

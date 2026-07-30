@@ -31,14 +31,36 @@ class YTSubscriptionHandler(commands.Cog, name="Youtube Subscription Handler"):
             if expiry_time < datetime.utcnow().timestamp():
                 self.bot.log.info(
                     f"[Youtube] Resubscribing YT channel {channel.display_name}")
-                await self.yt_subscribe(channel, channel_data)
+                try:
+                    await self.yt_subscribe(channel, channel_data)
+                except Exception:
+                    # A malformed callback or transient request failure must
+                    # not stop renewals for every channel after it.
+                    self.bot.log.exception(
+                        f"[Youtube] Failed to resubscribe YT channel "
+                        f"{channel.display_name}"
+                    )
+                await sleep(1)
 
     async def yt_subscribe(self, channel: PartialYoutubeUser, channel_data: YoutubeCallback):
-        await self.bot.yapi.create_subscription(channel, channel_data.secret, channel_data.subscription_id)
+        secret = channel_data.get("secret")
+        if not secret:
+            # Persist first because the confirmation request reads the secret
+            # from the database while create_subscription is still waiting.
+            secret = self.bot.random_string_generator(21)
+            channel_data["secret"] = secret
+            await self.bot.db.write_yt_callback(channel, channel_data)
+
+        subscription = await self.bot.yapi.create_subscription(
+            channel,
+            secret,
+            channel_data.get("subscription_id"),
+        )
         # Minus a day plus 100 seconds, ensures that the subscription never expires
         timestamp = datetime.utcnow().timestamp() + (LEASE_SECONDS - 86500)
-        await self.bot.db.write_yt_callback_expiration(channel, timestamp)
-        await sleep(1)
+        channel_data["subscription_id"] = subscription.id
+        channel_data["expiry_time"] = int(timestamp)
+        await self.bot.db.write_yt_callback(channel, channel_data)
 
 
 def setup(bot):

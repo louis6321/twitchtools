@@ -1117,10 +1117,16 @@ class CommandsCog(commands.Cog):
         await ctx.response.defer()
         self.bot.log.info("[Youtube] Running subscription recreation")
         for channel, channel_data in (await self.bot.db.get_all_yt_callbacks()).items():
-            await self.bot.yapi.create_subscription(channel, channel_data["secret"], channel_data["subscription_id"])
+            subscription = await self.bot.yapi.create_subscription(
+                channel,
+                channel_data["secret"],
+                channel_data.get("subscription_id"),
+            )
             # Minus a day plus 100 seconds, ensures that the subscription never expires
             timestamp = datetime.utcnow().timestamp() + (LEASE_SECONDS - 86500)
-            await self.bot.db.write_yt_callback_expiration(channel, timestamp)
+            channel_data["subscription_id"] = subscription.id
+            channel_data["expiry_time"] = int(timestamp)
+            await self.bot.db.write_yt_callback(channel, channel_data)
             await asyncio.sleep(0.25)
 
         await ctx.send(f"{self.bot.emotes.success} Recreated live subscriptions!")
