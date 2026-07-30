@@ -183,13 +183,17 @@ class StreamStateManager(commands.Cog):
 
         channel_cache = await self.bot.db.get_channel_cache(stream.user)
         callback = await self.bot.db.get_callback(stream.user)
+        if not callback:
+            return
         on_cooldown = self.on_cooldown(channel_cache.get("alert_cooldown", 0))
 
         # Do not re-run this function is the streamer is already live
         if self.is_live(channel_cache):
             if stream.origin == AlertOrigin.callback:
                 self.bot.log.info(
-                    f"[Twitch] Callback received for {stream.user.display_name} while live, ignoring")
+                    f"[Twitch] Callback received for "
+                    f"{stream.user.display_name} while live, checking "
+                    "pending title-matched alerts")
             elif stream.origin == AlertOrigin.catchup:
                 await self.viewer_count_milestones(stream, callback, channel_cache)
             # Remove this return so that title phrase matching can run
@@ -315,7 +319,13 @@ class StreamStateManager(commands.Cog):
 
     async def send_live_alerts_and_channels(self, item: Union[Stream, YoutubeVideo], embed: disnake.Embed, callback: Union[Callback, YoutubeCallback], channel_cache: Union[ChannelCache, YoutubeChannelCache]) -> tuple[list, list, list]:
         SelfOverride, DefaultRole, OverrideRole = self.get_overwrites()
-        on_cooldown = self.on_cooldown(channel_cache.get("alert_cooldown", 0))
+        # Cooldown reuse only applies when a stream first goes online. If the
+        # stream is already live, untriggered guilds may now match a title
+        # phrase and need a fresh alert.
+        on_cooldown = (
+            not channel_cache.get("is_live", False)
+            and self.on_cooldown(channel_cache.get("alert_cooldown", 0))
+        )
 
         live_channels = []
         live_alerts = []
@@ -762,6 +772,13 @@ class StreamStateManager(commands.Cog):
         await self.bot.ratelimit_request(event.broadcaster)
         # channel_cache = await get_channel_cache()
         channel_cache = await self.bot.db.get_channel_cache(stream.user)
+        # EventSub is the source of truth for this update. Helix can briefly
+        # return the previous title immediately after the event arrives.
+        stream.title = event.title
+        stream.stream_title = event.title
+        stream.game = event.game
+        stream.game_name = event.game
+        stream.game_id = event.game_id
         stream.user = await self.bot.tapi.get_user(user=stream.user)
         embed = self.get_stream_embed(event, stream=stream)
         await self.update_alert_messages(channel_cache, embed)
@@ -777,6 +794,10 @@ class StreamStateManager(commands.Cog):
             channel_cache.games[event.game_name] = old_time
             channel_cache.last_update = int(time())
             await self.bot.db.write_channel_cache(stream.user, channel_cache)
+
+        # Re-evaluate guilds that were skipped when the stream's original
+        # title did not contain their configured match phrase.
+        await self.on_streamer_online(stream)
 
     async def viewer_count_milestones(self, stream: Stream, callback: Callback, channel_cache: ChannelCache):
         # Check if view count is higher than minimum and if it exceeds a previous announcement + interval amount
