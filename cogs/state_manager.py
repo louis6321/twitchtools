@@ -470,20 +470,9 @@ class StreamStateManager(commands.Cog):
                                 if webhook.startswith("https://hooks.slack.com"):
                                     message = self.get_slack_live_message(item)
                                     payload = {
-                                        # Fallback text for notifications and
-                                        # clients that do not render blocks.
+                                        # Top-level text preserves Slack's
+                                        # clickable inline-code URL handling.
                                         "text": message,
-                                        "blocks": [{
-                                            "type": "section",
-                                            "text": {
-                                                "type": "mrkdwn",
-                                                "text": message,
-                                                # Prevent Slack from turning
-                                                # the URL into a link before
-                                                # parsing its code tags.
-                                                "verbatim": True,
-                                            },
-                                        }],
                                         "unfurl_links": False,
                                         "unfurl_media": False,
                                     }
