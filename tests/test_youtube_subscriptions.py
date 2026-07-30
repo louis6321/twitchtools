@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -6,6 +7,7 @@ from munch import munchify
 
 from cogs.yt_subscription_handler import YTSubscriptionHandler
 from twitchtools import PartialYoutubeUser
+from twitchtools.api_youtube import http_youtube
 
 
 class FakeLog:
@@ -15,6 +17,45 @@ class FakeLog:
 
 
 class YoutubeSubscriptionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confirmation_listener_exists_before_subscribe_request(self):
+        channel = PartialYoutubeUser("channel-1", "Fast Hub Channel")
+
+        class FastConfirmationBot:
+            def __init__(self):
+                self.listener = None
+                self.log = FakeLog()
+
+            async def wait_for(self, event_name, check, timeout=None):
+                future = asyncio.get_running_loop().create_future()
+                self.listener = (event_name, check, future)
+                return await future
+
+        bot = FastConfirmationBot()
+
+        async def request(*args, **kwargs):
+            self.assertIsNotNone(bot.listener)
+            event_name, check, future = bot.listener
+            self.assertEqual(
+                "youtube_subscription_confirmation", event_name
+            )
+            self.assertTrue(check("existing-subscription-id"))
+            future.set_result("existing-subscription-id")
+            return SimpleNamespace(status=202)
+
+        api = object.__new__(http_youtube)
+        api.bot = bot
+        api.pubsuburi = "https://hub.example.test/subscribe"
+        api.callback_url = "https://callback.example.test"
+        api._request = AsyncMock(side_effect=request)
+
+        subscription = await api.create_subscription(
+            channel,
+            "secret",
+            "existing-subscription-id",
+        )
+
+        self.assertEqual("existing-subscription-id", subscription.id)
+
     async def test_missing_subscription_id_is_created_and_persisted(self):
         channel = PartialYoutubeUser("channel-1", "Legacy Channel")
         channel_data = munchify(

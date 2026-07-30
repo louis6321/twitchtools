@@ -93,34 +93,50 @@ class http_youtube:
         #  For resubscriptions an ID already exists, reuse it
         subscription_id = subscription_id or self.bot.random_string_generator(
             21)
-        response = await self._request(self.pubsuburi,
-                                       data={
-                                           "hub.callback": f"{self.callback_url}/youtube/{channel.id}",
-                                           "hub.mode": "subscribe",
-                                           "hub.verify": "async",
-                                           "hub.lease_seconds": str(LEASE_SECONDS),
-                                           "hub.topic": f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel.id}",
-                                           "hub.secret": secret,
-                                           "hub.verify_token": f"{secret}:{subscription_id}"
-                                       }, method="post", no_key=True)
-        if response.status not in [202, 204]:
-            raise SubscriptionError(
-                f"There was an error subscribing to the pubsub. Please try again later. Error code: {response.status}")
-
         subscription = YoutubeSubscription(subscription_id, channel, secret)
 
-        # Wait for subscription confirmation
         def check(verify_token):
             if verify_token == subscription.id:
                 return True
             self.bot.log.warning(f"Bad verify token received for {channel.display_name}")
             return False
+
+        # Register before sending the request. The hub can call us back before
+        # its subscribe POST response reaches this coroutine.
+        confirmation_task = asyncio.create_task(
+            self.bot.wait_for(
+                "youtube_subscription_confirmation",
+                check=check,
+            )
+        )
+        # Give wait_for a chance to install its listener before network I/O.
+        await asyncio.sleep(0)
+
         try:
-            await self.bot.wait_for("youtube_subscription_confirmation", check=check, timeout=8)
-        except asyncio.TimeoutError:
-            await self.delete_subscription(subscription)
-            raise SubscriptionError(
-                "Did not receive subscription confirmation! Please try again later")
+            response = await self._request(self.pubsuburi,
+                                           data={
+                                               "hub.callback": f"{self.callback_url}/youtube/{channel.id}",
+                                               "hub.mode": "subscribe",
+                                               "hub.verify": "async",
+                                               "hub.lease_seconds": str(LEASE_SECONDS),
+                                               "hub.topic": f"https://www.youtube.com/xml/feeds/videos.xml?channel_id={channel.id}",
+                                               "hub.secret": secret,
+                                               "hub.verify_token": f"{secret}:{subscription_id}"
+                                           }, method="post", no_key=True)
+            if response.status not in [202, 204]:
+                raise SubscriptionError(
+                    f"There was an error subscribing to the pubsub. Please try again later. Error code: {response.status}")
+
+            try:
+                await asyncio.wait_for(confirmation_task, timeout=8)
+            except asyncio.TimeoutError:
+                await self.delete_subscription(subscription)
+                raise SubscriptionError(
+                    "Did not receive subscription confirmation! Please try again later")
+        finally:
+            if not confirmation_task.done():
+                confirmation_task.cancel()
+                await asyncio.gather(confirmation_task, return_exceptions=True)
         return subscription
 
     async def delete_subscription(self, subscription: YoutubeSubscription) -> ClientResponse:
