@@ -19,6 +19,8 @@ from twitchtools import (AlertOrigin, PartialUser, PartialYoutubeUser, Stream,
                          TitleEvent, User, YoutubeUser, YoutubeVideo,
                          YoutubeVideoType, human_timedelta, Callback, YoutubeCallback)
 from twitchtools.enums import ChannelCache, YoutubeChannelCache
+from twitchtools.youtube_cache import (get_youtube_stream_states,
+                                       sync_youtube_channel_cache)
 
 if TYPE_CHECKING:
     from main import TwitchCallBackBot
@@ -136,21 +138,43 @@ class StreamStateManager(commands.Cog):
             return
         if not self.is_live(channel_cache):
             return
-        self.bot.log.info(
-            f"[Youtube]{self.is_catchup(channel)} {channel.display_name} => OFFLINE")
-        await self.set_channels_offline(callback, channel_cache)
-        await self.set_youtube_alerts_offline(channel, callback, channel_cache)
 
-        channel_cache.pop("live_channels", None)
-        if channel_cache.get("live_alerts", []) != []:
-            channel_cache.reusable_alerts = channel_cache.live_alerts
-        channel_cache.pop("live_alerts", None)
-        channel_cache.pop("video_id", None)
-        channel_cache.is_live = False
-        channel_cache.pop("last_update", None)
-        channel_cache.pop("triggered_guilds", None)
+        streams = get_youtube_stream_states(channel_cache)
+        requested_video_id = getattr(channel, "video_id", None)
+        if requested_video_id is not None:
+            video_ids = (
+                [requested_video_id] if requested_video_id in streams else []
+            )
+        else:
+            # Backwards compatibility for an offline event without a video ID.
+            video_ids = list(streams.keys())
 
-        # Update cache
+        remaining_streams = {
+            video_id: stream_state
+            for video_id, stream_state in streams.items()
+            if video_id not in video_ids
+        }
+        active_channel_ids = {
+            channel_id
+            for stream_state in remaining_streams.values()
+            for channel_id in stream_state.get("live_channels", [])
+        }
+
+        for video_id in video_ids:
+            stream_state = streams[video_id]
+            self.bot.log.info(
+                f"[Youtube]{self.is_catchup(channel)} "
+                f"{channel.display_name} ({video_id}) => OFFLINE"
+            )
+            await self.set_channels_offline(
+                callback, stream_state, active_channel_ids
+            )
+            await self.set_youtube_alerts_offline(
+                channel, callback, stream_state
+            )
+            streams.pop(video_id, None)
+
+        sync_youtube_channel_cache(channel_cache, streams)
         await self.bot.db.write_yt_channel_cache(channel, channel_cache)
 
     async def on_streamer_online(self, stream: Stream):
@@ -230,19 +254,25 @@ class StreamStateManager(commands.Cog):
 
         channel_cache = await self.bot.db.get_yt_channel_cache(video.channel)
         callback = await self.bot.db.get_yt_callback(video.channel)
-        on_cooldown = self.on_cooldown(channel_cache.get("alert_cooldown", 0))
+        streams = get_youtube_stream_states(channel_cache)
+        stream_cache = streams.get(video.id)
 
-        # Update title details if streamer is already live
-        if self.is_live(channel_cache):
+        # Repeated notifications are ignored per video, not per channel. A
+        # different video on the same channel is a separate live alert.
+        if stream_cache is not None:
             if video.origin == AlertOrigin.catchup:
-                await self.update_youtube_title(video, channel_cache)
+                await self.update_youtube_title(video, stream_cache)
             elif video.origin == AlertOrigin.callback:
-                self.bot.log.info(f"[Youtube] Callback received for {video.user.display_name} while live, ignoring")
+                self.bot.log.info(
+                    f"[Youtube] Callback received for "
+                    f"{video.user.display_name} video {video.id} while live, "
+                    "ignoring"
+                )
+            sync_youtube_channel_cache(channel_cache, streams)
+            await self.bot.db.write_yt_channel_cache(
+                video.channel, channel_cache
+            )
             return
-
-        if on_cooldown:  # There is a 10 minute cooldown between alerts, but live channels will still be created
-            self.bot.log.info(
-                f"[Youtube] Notification cooldown active for {video.user.display_name}, restoring old channels/messages")
 
         self.bot.log.info(
             f"[Youtube{' Premiere' if video.type == YoutubeVideoType.premiere else ' Stream'}]{self.is_catchup(video)} {video.user.display_name} => ONLINE")
@@ -256,31 +286,21 @@ class StreamStateManager(commands.Cog):
         video.user = await self.bot.yapi.get_user(video.user)
         embed = self.get_stream_embed(video)
 
-        live_channels, live_alerts, triggered_guilds = await self.send_live_alerts_and_channels(video, embed, callback, channel_cache)
+        live_channels, live_alerts, triggered_guilds = await self.send_live_alerts_and_channels(
+            video, embed, callback, {}
+        )
 
-        if not channel_cache.get("is_live", False):
-            # Finally, combine all data into channel cache, and update the file
-            channel_cache = {
-                "alert_cooldown": int(time()),
-                "channel_id": video.channel.id,
-                "video_id": video.id,
-                "is_live": True,
-                "live_channels": live_channels,
-                "live_alerts": live_alerts,
-                "last_update": int(time()),
-                "triggered_guilds": triggered_guilds
-            }
-        else:
-            channel_cache["triggered_guilds"] = list(
-                set(triggered_guilds + channel_cache["triggered_guilds"]))
-            channel_cache["live_channels"] = list(
-                set(live_channels + channel_cache["live_channels"]))
-            msgs = [a["message"] for a in channel_cache["live_alerts"]]
-            for alert in live_alerts:
-                if alert["message"] not in msgs:
-                    channel_cache["live_alerts"].append(alert)
-
-        # await write_channel_cache(channel_cache)
+        streams[video.id] = {
+            "video_id": video.id,
+            "title": video.title,
+            "alert_cooldown": int(time()),
+            "live_channels": live_channels,
+            "live_alerts": live_alerts,
+            "last_update": int(time()),
+            "triggered_guilds": triggered_guilds,
+        }
+        channel_cache["channel_id"] = video.channel.id
+        sync_youtube_channel_cache(channel_cache, streams)
         await self.bot.db.write_yt_channel_cache(video.user, channel_cache)
 
     def on_cooldown(self, alert_cooldown: int) -> bool:
@@ -467,17 +487,15 @@ class StreamStateManager(commands.Cog):
 
         return live_channels, live_alerts, triggered_guilds
 
-    async def update_youtube_title(self, video: YoutubeVideo, channel_cache: YoutubeChannelCache):
-        if video.id == channel_cache.video_id:
-            title_cache = await self.bot.db.get_yt_title_cache(video.channel)
-            # Only the title can be updated in an embed.
-            if title_cache.title != video.title:
-                title_cache.title = video.title
-                await self.bot.db.write_yt_title_cache(video.channel, title_cache)
-                await self.bot.ratelimit_request(video.user)
-                video.user = await self.bot.yapi.get_user(video.user)
-                embed = self.get_stream_embed(video)
-                await self.update_alert_messages(channel_cache, embed)
+    async def update_youtube_title(self, video: YoutubeVideo, stream_cache: dict):
+        # Titles and alert messages are tracked per video because a channel may
+        # have several simultaneous broadcasts.
+        if stream_cache.get("title") != video.title:
+            stream_cache["title"] = video.title
+            await self.bot.ratelimit_request(video.user)
+            video.user = await self.bot.yapi.get_user(video.user)
+            embed = self.get_stream_embed(video)
+            await self.update_alert_messages(stream_cache, embed)
 
     async def update_alert_messages(self, channel_cache: Union[ChannelCache, YoutubeChannelCache], embed: disnake.Embed):
         for m in channel_cache.get("live_alerts", []):
@@ -507,9 +525,17 @@ class StreamStateManager(commands.Cog):
     def is_catchup(self, user: Union[User, YoutubeUser]) -> str:
         return ' [Catchup]' if user.origin == AlertOrigin.catchup else ''
 
-    async def set_channels_offline(self, callback: Union[Callback, YoutubeCallback], channel_cache: Union[ChannelCache, YoutubeChannelCache]):
+    async def set_channels_offline(
+        self,
+        callback: Union[Callback, YoutubeCallback],
+        channel_cache: Union[ChannelCache, YoutubeChannelCache],
+        active_channel_ids: set[int] = None,
+    ):
         """Iterate through all live channels, if applicable, either deleting them or renaming them to stream-offline depending on mode"""
+        active_channel_ids = active_channel_ids or set()
         for channel_id in channel_cache.get("live_channels", []):
+            if channel_id in active_channel_ids:
+                continue
             if channel := self.bot.get_channel(channel_id):
                 try:
                     match callback.alert_roles[str(channel.guild.id)].mode:
@@ -633,9 +659,16 @@ class StreamStateManager(commands.Cog):
         # except YAMLError:
         #     self.bot.log.error("Error parsing config/callbacks.yml, ignoring.")
 
-    async def set_youtube_alerts_offline(self, channel: YoutubeUser, callback: Callback, channel_cache: YoutubeChannelCache):
+    async def set_youtube_alerts_offline(self, channel: YoutubeUser, callback: YoutubeCallback, channel_cache: YoutubeChannelCache):
         """Just like channels, iterate through the sent live alerts, and make them past tense."""
-        for alert_ids in channel_cache.get("live_alerts", []):
+        live_alerts = channel_cache.get("live_alerts", [])
+        if not live_alerts:
+            return
+        video_end_time = await self.bot.yapi.has_video_ended(
+            channel_cache.get("video_id")
+        )
+        end_time = parser.parse(video_end_time) if video_end_time else utcnow()
+        for alert_ids in live_alerts:
             if c := self.bot.get_channel(alert_ids["channel"]):
                 try:  # Try to get the live alerts message, skipping if not found
                     message = await c.fetch_message(alert_ids["message"])
@@ -648,8 +681,6 @@ class StreamStateManager(commands.Cog):
                 # Replace the applicable strings with past tense phrasing
                 embed.set_author(name=f"{channel.display_name} is now offline",
                                  url=embed.author.url, icon_url=embed.author.icon_url)
-                video_end_time = await self.bot.yapi.has_video_ended(channel_cache.video_id)
-                end_time = parser.parse(video_end_time) if video_end_time else utcnow()
                 if callback["alert_roles"].get(str(c.guild.id), {}).get("show_cest_time", False):
                     cest_tz = tz.gettz("CET")
                     start_time_cest = embed.timestamp.astimezone(

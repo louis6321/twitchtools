@@ -12,6 +12,7 @@ from .exceptions import *
 from .subscription import YoutubeSubscription
 from .user import PartialYoutubeUser, YoutubeUser
 from .video import YoutubeVideo
+from .youtube_cache import get_youtube_stream_states
 
 if TYPE_CHECKING:
     from main import TwitchCallBackBot
@@ -266,9 +267,14 @@ class http_youtube:
         except IndexError:  # This is a video deletion/unpublish message, ignore
             deleted_video_id = soup.find("link")["href"].split("watch?v=")[-1]
             channel_cache = await self.bot.db.get_yt_channel_cache(channel)
-            if channel_cache.is_live and channel_cache.video_id == deleted_video_id:
-                channel.origin = AlertOrigin.callback
-                self.bot.queue.put_nowait(channel)
+            if deleted_video_id in get_youtube_stream_states(channel_cache):
+                offline_channel = PartialYoutubeUser(
+                    channel.id,
+                    channel.display_name,
+                    origin=AlertOrigin.callback,
+                    video_id=deleted_video_id,
+                )
+                self.bot.queue.put_nowait(offline_channel)
             self.bot.log.info(
                 f"[Youtube] {display_name} deleted video {deleted_video_id}")
             return
@@ -297,10 +303,9 @@ class http_youtube:
 
         if video.published_at.timestamp() < last_vid_publish_time:
             self.bot.log.info(
-                f"[Youtube] {display_name} updated older video with {id}, ignoring")
-            return
-
-        await self.bot.db.update_last_yt_vid(video)
+                f"[Youtube] {display_name} updated older live video {id}, processing")
+        else:
+            await self.bot.db.update_last_yt_vid(video)
 
         self.bot.log.debug(
             f"[Youtube] {id} new {video.type} for {display_name}")
@@ -308,14 +313,14 @@ class http_youtube:
         return video
 
     async def is_channel_live(self, channel: PartialYoutubeUser) -> Optional[str]:
-        if ids := (await self.get_recent_video_ids(channel)).get(channel, None):
-            stream = await self._request(f"{self.base}/videos?id={','.join(ids)}&part=liveStreamingDetails,status")
-            stream_json = await stream.json()
-            # Check if video is a stream and return ID if so
-            for item in stream_json["items"]:
-                if self.is_stream(item) and not self.has_stream_ended(item):
-                    return item["id"]
-        return None
+        live_stream_ids = await self.get_channel_live_stream_ids(channel)
+        return live_stream_ids[0] if live_stream_ids else None
+
+    async def get_channel_live_stream_ids(
+        self, channel: PartialYoutubeUser
+    ) -> list[str]:
+        recent_video_ids = await self.get_recent_video_ids(channel)
+        return (await self.are_videos_live(recent_video_ids)).get(channel, [])
 
     async def get_recent_video_ids(self, channels: list[PartialYoutubeUser]) -> dict[PartialYoutubeUser, list[str]]:
         ids_dict: dict[PartialYoutubeUser, list[str]] = {}
@@ -342,8 +347,8 @@ class http_youtube:
                         f"Exception fetching uploads playlist for {channel.display_name}: {str(e)}")
         return ids_dict
 
-    async def are_videos_live(self, video_ids: dict[PartialYoutubeUser, list[str]]) -> dict[PartialYoutubeUser, str]:
-        live_channels = {}
+    async def are_videos_live(self, video_ids: dict[PartialYoutubeUser, list[str]]) -> dict[PartialYoutubeUser, list[str]]:
+        live_channels: dict[PartialYoutubeUser, list[str]] = {}
         all_ids = []
         for ids in video_ids.values():
             all_ids += ids
@@ -356,6 +361,5 @@ class http_youtube:
                 if video_type != YoutubeVideoType.video and not self.has_stream_ended(item):
                     for c, v in video_ids.items():
                         if item["id"] in v:
-                            channel = c
-                    live_channels[channel] = item["id"]
+                            live_channels.setdefault(c, []).append(item["id"])
         return live_channels

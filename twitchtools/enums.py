@@ -356,13 +356,9 @@ class ChannelCache(Enum):
 class YoutubeChannelCache(Enum):
     alert_cooldown: int
     channel_id: str
-    video_id: int
     is_live: bool
-    live_channels: list[int]
-    live_alerts: dict[str, int]
-    last_update: int
     reusable_alerts: list[dict[str, int]]
-    triggered_guilds: list[str]
+    streams: dict[str, dict]
 
 
 class Emotes(Enum):

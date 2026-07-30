@@ -28,11 +28,18 @@ class PartialUser:
 
 
 class PartialYoutubeUser:
-    def __init__(self, user_id: str, display_name: str, origin: Optional[AlertOrigin] = AlertOrigin.unavailable):
+    def __init__(
+        self,
+        user_id: str,
+        display_name: str,
+        origin: Optional[AlertOrigin] = AlertOrigin.unavailable,
+        video_id: Optional[str] = None,
+    ):
         self.user_id: str = user_id
         self.id: str = user_id
         self.display_name: str = display_name
         self.origin: AlertOrigin = origin
+        self.video_id: Optional[str] = video_id
 
     def __str__(self) -> str:
         return self.display_name
