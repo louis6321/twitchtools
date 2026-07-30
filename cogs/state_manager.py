@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 
 TWITCH_PURPLE = 9520895  # Hex #9146FF
 YOUTUBE_RED = 16711680  # Hex FF0000
+LTR_ISOLATE = "\u2066"
+FIRST_STRONG_ISOLATE = "\u2068"
+POP_DIRECTIONAL_ISOLATE = "\u2069"
 
 
 class StreamStateManager(commands.Cog):
@@ -69,12 +72,18 @@ class StreamStateManager(commands.Cog):
         embed = disnake.Embed(
             url=f"https://twitch.tv/{event.broadcaster.username}", colour=TWITCH_PURPLE, timestamp=utcnow())
         if event.title != old_title:
-            embed.add_field(name="Old Title", value=old_title, inline=True)
-            embed.add_field(name="New Title", value=event.title, inline=True)
+            embed.add_field(name="Old Title", value=self.isolate_bidi_text(
+                old_title), inline=True)
+            embed.add_field(name="New Title", value=self.isolate_bidi_text(
+                event.title), inline=True)
         if event.game != old_game:
-            embed.add_field(name="Old Game", value=old_game, inline=True)
-            embed.add_field(name="New Game", value=event.game, inline=True)
-        embed.set_author(name=f"{event.broadcaster.display_name} updated their {' and '.join(updated)}!",
+            embed.add_field(name="Old Game", value=self.isolate_bidi_text(
+                old_game), inline=True)
+            embed.add_field(name="New Game", value=self.isolate_bidi_text(
+                event.game), inline=True)
+        embed.set_author(name=self.isolate_ltr_text(
+            f"{self.isolate_bidi_text(event.broadcaster.display_name)} "
+            f"updated their {' and '.join(updated)}!"),
                          url=f"https://twitch.tv/{event.broadcaster.username}", icon_url=user.avatar)
         embed.set_footer(text=self.footer_msg)
 
@@ -342,16 +351,13 @@ class StreamStateManager(commands.Cog):
                         f"{'[Youtube]' if isinstance(item, YoutubeVideo) else '[Twitch]'} {item.user.display_name} title phrase for {guild.name} didn't match, skipping alert")
                     continue
 
-            user_escaped = item.user.display_name.replace('_', '\_')
-
             if isinstance(item, YoutubeVideo):
                 if item.type == YoutubeVideoType.premiere and not alert_info.enable_premieres:
                     continue
-                message = f"{user_escaped} is live on Youtube!"
                 link = f"https://youtube.com/watch?v={item.id}"
             else:
-                message = f"{user_escaped} is live on Twitch!"
                 link = f"https://twitch.tv/{item.user.username}"
+            message = self.get_discord_live_message(item)
 
             # Format role mention
             if alert_info.role_id == "everyone":
@@ -393,8 +399,6 @@ class StreamStateManager(commands.Cog):
                                 pass
                             else:
                                 try:
-                                    user_escaped = item.user.display_name.replace(
-                                        '_', '\_')
                                     live_alert = await alert_message.edit(content=alert_info.get("custom_message", message)+role_mention, embed=embed)
                                     live_alerts.append(
                                         {"channel": live_alert.channel.id, "message": live_alert.id})
@@ -420,8 +424,11 @@ class StreamStateManager(commands.Cog):
                         channel = await guild.create_text_channel(f"🔴{item.user.display_name.lower()}", overwrites=NewChannelOverrides, position=0)
                         if channel:
                             user_escaped = item.user.display_name.replace(
-                                '_', '\_')
-                            await channel.send(f"{user_escaped} is live! {link}")
+                                '_', '\\_')
+                            await channel.send(self.isolate_ltr_text(
+                                f"{self.isolate_bidi_text(user_escaped)} "
+                                f"is live! {link}"
+                            ))
                             live_channels.append(channel.id)
                     except disnake.Forbidden:
                         self.bot.log.warning(
@@ -472,11 +479,15 @@ class StreamStateManager(commands.Cog):
                                     except client_exceptions.ClientError as e:
                                         self.bot.log.error(f"{'[Youtube]' if isinstance(item, YoutubeVideo) else '[Twitch]'} Error sending slack online webhook for {item.user.display_name}: {str(e)}")
                                 elif webhook.startswith("https://discord.com/api/webhooks"):
-                                    user_escaped = item.user.display_name.replace('_', '\_')
                                     if isinstance(item, YoutubeVideo):
-                                        message = f"{user_escaped} is live on Youtube!\n{item.title}\nhttps://youtube.com/watch?v={item.id}"
+                                        url = f"https://youtube.com/watch?v={item.id}"
                                     else:
-                                        message = f"{user_escaped} is live on Twitch!\n{item.title}\nhttps://twitch.tv/{item.user.username}"
+                                        url = f"https://twitch.tv/{item.user.username}"
+                                    message = (
+                                        f"{self.get_discord_live_message(item)}\n"
+                                        f"{self.isolate_bidi_text(item.title)}\n"
+                                        f"{self.isolate_ltr_text(url)}"
+                                    )
                                     hook = disnake.Webhook.from_url(webhook, session=self.bot.aSession)
                                     try:
                                         await hook.send(message)
@@ -495,6 +506,28 @@ class StreamStateManager(commands.Cog):
         return live_channels, live_alerts, triggered_guilds
 
     @staticmethod
+    def isolate_bidi_text(text: str) -> str:
+        return (
+            f"{FIRST_STRONG_ISOLATE}{text}"
+            f"{POP_DIRECTIONAL_ISOLATE}"
+        )
+
+    @staticmethod
+    def isolate_ltr_text(text: str) -> str:
+        return f"{LTR_ISOLATE}{text}{POP_DIRECTIONAL_ISOLATE}"
+
+    @staticmethod
+    def get_discord_live_message(item: Union[Stream, YoutubeVideo]) -> str:
+        display_name = item.user.display_name.replace('_', '\\_')
+        display_name = StreamStateManager.isolate_bidi_text(display_name)
+        platform = (
+            "YouTube" if isinstance(item, YoutubeVideo) else "Twitch"
+        )
+        return StreamStateManager.isolate_ltr_text(
+            f"{display_name} is live on {platform}!"
+        )
+
+    @staticmethod
     def get_slack_live_message(item: Union[Stream, YoutubeVideo]) -> str:
         if isinstance(item, YoutubeVideo):
             platform = "YouTube"
@@ -505,9 +538,16 @@ class StreamStateManager(commands.Cog):
             platform_emoji = ":twitch:"
             url = f"https://twitch.tv/{item.user.username}"
 
+        display_name = StreamStateManager.isolate_bidi_text(
+            item.user.display_name
+        )
+        title = StreamStateManager.isolate_bidi_text(item.title)
         return (
-            f":li::ve: *{item.user.display_name}* is live on {platform}! "
-            f"{platform_emoji} `{url}`\n{item.title}"
+            StreamStateManager.isolate_ltr_text(
+                f":li::ve: *{display_name}* is live on {platform}! "
+                f"{platform_emoji} `{url}`"
+            )
+            + f"\n{title}"
         )
 
     async def update_youtube_title(self, video: YoutubeVideo, stream_cache: dict):
@@ -589,7 +629,9 @@ class StreamStateManager(commands.Cog):
                     continue
                 embed = message.embeds[0]
                 # Replace the applicable strings with past tense phrasing
-                embed.set_author(name=f"{streamer.display_name} is now offline",
+                embed.set_author(name=self.isolate_ltr_text(
+                    f"{self.isolate_bidi_text(streamer.display_name)} "
+                    "is now offline"),
                                  url=embed.author.url, icon_url=embed.author.icon_url)
                 embed.url = vod.url if vod else embed.url
                 # embed.set_author(name=embed.author.name.replace("is now live on Twitch!", "was live on Twitch!"), url=embed.author.url)
@@ -637,7 +679,10 @@ class StreamStateManager(commands.Cog):
                         detailed_length = ""
                     embed.description = f"{past_games}{detailed_length}"
                     try:
-                        await message.edit(content=f"{streamer.display_name} is now offline", embed=embed)
+                        await message.edit(content=self.isolate_ltr_text(
+                            f"{self.isolate_bidi_text(streamer.display_name)} "
+                            "is now offline"
+                        ), embed=embed)
                     except disnake.Forbidden:
                         continue
 
@@ -702,7 +747,9 @@ class StreamStateManager(commands.Cog):
                     continue
                 embed = message.embeds[0]
                 # Replace the applicable strings with past tense phrasing
-                embed.set_author(name=f"{channel.display_name} is now offline",
+                embed.set_author(name=self.isolate_ltr_text(
+                    f"{self.isolate_bidi_text(channel.display_name)} "
+                    "is now offline"),
                                  url=embed.author.url, icon_url=embed.author.icon_url)
                 if callback["alert_roles"].get(str(c.guild.id), {}).get("show_cest_time", False):
                     cest_tz = tz.gettz("CET")
@@ -715,7 +762,10 @@ class StreamStateManager(commands.Cog):
                     detailed_length = ""
                 embed.description = f"Was streaming for {'~' if not video_end_time else ''}{human_timedelta(end_time, source=embed.timestamp, accuracy=2)}{detailed_length}"
                 try:
-                    await message.edit(content=f"{channel.display_name} is now offline", embed=embed)
+                    await message.edit(content=self.isolate_ltr_text(
+                        f"{self.isolate_bidi_text(channel.display_name)} "
+                        "is now offline"
+                    ), embed=embed)
                 except disnake.Forbidden:  # In case something weird happens
                     continue
 
@@ -756,26 +806,44 @@ class StreamStateManager(commands.Cog):
     def get_stream_embed(self, item: Union[Stream, YoutubeVideo], **kwargs) -> disnake.Embed:
         if isinstance(item, Stream):
             embed = disnake.Embed(
-                title=item.title, url=f"https://twitch.tv/{item.user.name}",
-                description=f"Streaming {item.game}\n[Watch Stream](https://twitch.tv/{item.user.name})",
+                title=self.isolate_bidi_text(item.title),
+                url=f"https://twitch.tv/{item.user.name}",
+                description=self.isolate_ltr_text(
+                    f"Streaming {self.isolate_bidi_text(item.game)}\n"
+                    f"[Watch Stream](https://twitch.tv/{item.user.name})"
+                ),
                 colour=TWITCH_PURPLE, timestamp=item.started_at)
-            embed.set_author(name=f"{item.user.display_name} is now live on Twitch!",
+            embed.set_author(name=self.isolate_ltr_text(
+                f"{self.isolate_bidi_text(item.user.display_name)} "
+                "is now live on Twitch!"),
                              url=f"https://twitch.tv/{item.user.name}", icon_url=item.user.avatar)
 
         elif isinstance(item, TitleEvent):
             embed = disnake.Embed(
-                title=item.title, url=f"https://twitch.tv/{item.broadcaster.username}",
-                description=f"Streaming {item.game}\n[Watch Stream](https://twitch.tv/{item.broadcaster.name})",
+                title=self.isolate_bidi_text(item.title),
+                url=f"https://twitch.tv/{item.broadcaster.username}",
+                description=self.isolate_ltr_text(
+                    f"Streaming {self.isolate_bidi_text(item.game)}\n"
+                    f"[Watch Stream](https://twitch.tv/"
+                    f"{item.broadcaster.name})"
+                ),
                 colour=TWITCH_PURPLE, timestamp=kwargs["stream"].started_at)
-            embed.set_author(name=f"{item.broadcaster.display_name} is now live on Twitch!",
+            embed.set_author(name=self.isolate_ltr_text(
+                f"{self.isolate_bidi_text(item.broadcaster.display_name)} "
+                "is now live on Twitch!"),
                              url=f"https://twitch.tv/{item.broadcaster.username}", icon_url=kwargs["stream"].user.avatar)
 
         elif isinstance(item, YoutubeVideo):
             embed = disnake.Embed(
-                title=item.title, url=f"https://youtube.com/watch?v={item.id}",
-                description=f"[Watch Stream](https://youtube.com/watch?v={item.id})",
+                title=self.isolate_bidi_text(item.title),
+                url=f"https://youtube.com/watch?v={item.id}",
+                description=self.isolate_ltr_text(
+                    f"[Watch Stream](https://youtube.com/watch?v={item.id})"
+                ),
                 colour=YOUTUBE_RED, timestamp=item.started_at)
-            embed.set_author(name=f"{item.user.display_name} is now live on Youtube!",
+            embed.set_author(name=self.isolate_ltr_text(
+                f"{self.isolate_bidi_text(item.user.display_name)} "
+                "is now live on YouTube!"),
                              url=f"https://youtube.com/watch?v={item.id}", icon_url=item.user.avatar_url)
 
         embed.set_footer(text=self.footer_msg)
@@ -825,11 +893,22 @@ class StreamStateManager(commands.Cog):
             # Create embed message
             stream.user = await self.bot.tapi.get_user(user=stream.user)
             view_embed = disnake.Embed(
-                title=f"{stream.user.display_name} just passed {channel_cache.get('viewer_milestone', 0):,} viewers!", url=f"https://twitch.tv/{stream.user.name}",
-                description=f"Streaming {stream.game} for {human_timedelta(stream.started_at, suffix=False, accuracy=2)}\n[Watch Stream](https://twitch.tv/{stream.user.name})",
+                title=self.isolate_ltr_text(
+                    f"{self.isolate_bidi_text(stream.user.display_name)} "
+                    f"just passed "
+                    f"{channel_cache.get('viewer_milestone', 0):,} viewers!"
+                ),
+                url=f"https://twitch.tv/{stream.user.name}",
+                description=self.isolate_ltr_text(
+                    f"Streaming {self.isolate_bidi_text(stream.game)} for "
+                    f"{human_timedelta(stream.started_at, suffix=False, accuracy=2)}\n"
+                    f"[Watch Stream](https://twitch.tv/{stream.user.name})"
+                ),
                 colour=TWITCH_PURPLE, timestamp=utcnow())
             view_embed.set_author(
-                name=stream.title, url=f"https://twitch.tv/{stream.user.name}", icon_url=stream.user.avatar)
+                name=self.isolate_bidi_text(stream.title),
+                url=f"https://twitch.tv/{stream.user.name}",
+                icon_url=stream.user.avatar)
             # This got stuck when combined. Not sure why
             view_embed.set_footer(text=self.footer_msg)
 
@@ -857,8 +936,13 @@ class StreamStateManager(commands.Cog):
                     try:
                         # live_alert = await alert_channel.send(f"{stream.user.display_name} is live on Twitch!{role_mention}", embed=embed)
                         user_escaped = stream.user.display_name.replace(
-                            '_', '\_')
-                        await alert_channel.send(f"{user_escaped} just passed {channel_cache.get('viewer_milestone', 0):,} viewers!{role_mention}", embed=view_embed)
+                            '_', '\\_')
+                        await alert_channel.send(self.isolate_ltr_text(
+                            f"{self.isolate_bidi_text(user_escaped)} "
+                            f"just passed "
+                            f"{channel_cache.get('viewer_milestone', 0):,} "
+                            f"viewers!{role_mention}"
+                        ), embed=view_embed)
                     except disnake.Forbidden:
                         pass
                     except disnake.HTTPException:
