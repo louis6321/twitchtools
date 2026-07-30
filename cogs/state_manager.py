@@ -460,10 +460,7 @@ class StreamStateManager(commands.Cog):
                                 continue
                         if webhook not in channel_cache.get("triggered_guilds", []):
                                 if webhook.startswith("https://hooks.slack.com"):
-                                    if isinstance(item, YoutubeVideo):
-                                        message = f"{item.user.display_name} is live on Youtube!\n{item.title}\nhttps://youtube.com/watch?v={item.id}"
-                                    else:
-                                        message = f"{item.user.display_name} is live on Twitch!\n{item.title}\nhttps://twitch.tv/{item.user.username}"
+                                    message = self.get_slack_live_message(item)
                                     try:
                                         r = await self.bot.aSession.post(webhook, json={"text": message}, headers={"Content-type": "application/json"})
                                         rb = (await r.read()).decode()
@@ -496,6 +493,22 @@ class StreamStateManager(commands.Cog):
                     "Error parsing config/callbacks.yml, ignoring.")
 
         return live_channels, live_alerts, triggered_guilds
+
+    @staticmethod
+    def get_slack_live_message(item: Union[Stream, YoutubeVideo]) -> str:
+        if isinstance(item, YoutubeVideo):
+            platform = "YouTube"
+            platform_emoji = ":youtube:"
+            url = f"https://youtu.be/{item.id}"
+        else:
+            platform = "Twitch"
+            platform_emoji = ":twitch:"
+            url = f"https://twitch.tv/{item.user.username}"
+
+        return (
+            f":li::ve: *{item.user.display_name}* is live on {platform}! "
+            f"{platform_emoji} `{url}`\n{item.title}"
+        )
 
     async def update_youtube_title(self, video: YoutubeVideo, stream_cache: dict):
         # Titles and alert messages are tracked per video because a channel may
