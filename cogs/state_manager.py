@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 TWITCH_PURPLE = 9520895  # Hex #9146FF
 YOUTUBE_RED = 16711680  # Hex FF0000
+LEFT_TO_RIGHT_MARK = "\u200e"
 LTR_ISOLATE = "\u2066"
 FIRST_STRONG_ISOLATE = "\u2068"
 POP_DIRECTIONAL_ISOLATE = "\u2069"
@@ -468,8 +469,33 @@ class StreamStateManager(commands.Cog):
                         if webhook not in channel_cache.get("triggered_guilds", []):
                                 if webhook.startswith("https://hooks.slack.com"):
                                     message = self.get_slack_live_message(item)
+                                    payload = {
+                                        # Fallback text for notifications and
+                                        # clients that do not render blocks.
+                                        "text": message,
+                                        "blocks": [{
+                                            "type": "section",
+                                            "text": {
+                                                "type": "mrkdwn",
+                                                "text": message,
+                                                # Prevent Slack from turning
+                                                # the URL into a link before
+                                                # parsing its code tags.
+                                                "verbatim": True,
+                                            },
+                                        }],
+                                        "unfurl_links": False,
+                                        "unfurl_media": False,
+                                    }
                                     try:
-                                        r = await self.bot.aSession.post(webhook, json={"text": message}, headers={"Content-type": "application/json"})
+                                        r = await self.bot.aSession.post(
+                                            webhook,
+                                            json=payload,
+                                            headers={
+                                                "Content-type":
+                                                "application/json"
+                                            },
+                                        )
                                         rb = (await r.read()).decode()
                                         if r.status == 200 and rb == 'ok':
                                             self.bot.log.info(f"{'[Youtube]' if isinstance(item, YoutubeVideo) else '[Twitch]'} Sent slack online webhook for {item.user.display_name}")
@@ -543,10 +569,8 @@ class StreamStateManager(commands.Cog):
         )
         title = StreamStateManager.isolate_bidi_text(item.title)
         return (
-            StreamStateManager.isolate_ltr_text(
-                f":li::ve: *{display_name}* is live on {platform}! "
-                f"{platform_emoji} `{url}`"
-            )
+            f"{LEFT_TO_RIGHT_MARK}:li::ve: *{display_name}* "
+            f"is live on {platform}! {platform_emoji} `{url}`"
             + f"\n{title}"
         )
 
