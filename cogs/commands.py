@@ -371,6 +371,60 @@ class CommandsCog(commands.Cog):
             and callback["display_name"].lower().startswith(user_input.lower())
         ][:25]
 
+    async def resolve_configured_twitch_streamer(
+        self,
+        ctx: ApplicationCustomContext,
+        value: str,
+        alert_type: AlertType = AlertType.status,
+    ) -> tuple[PartialUser, Callback]:
+        """Resolve stored display names through their stable Twitch user ID."""
+        callbacks = (
+            await self.bot.db.get_all_callbacks()
+            if alert_type == AlertType.status
+            else await self.bot.db.get_all_title_callbacks()
+        )
+        guild_id = str(ctx.guild.id)
+        value_folded = value.casefold()
+        configured = next(
+            (
+                (user_id, callback)
+                for user_id, callback in callbacks.items()
+                if guild_id in callback.alert_roles
+                and (
+                    str(user_id) == value
+                    or callback.display_name.casefold() == value_folded
+                )
+            ),
+            None,
+        )
+        if configured is not None:
+            user_id, callback = configured
+            return (
+                PartialUser(
+                    user_id,
+                    callback.get("user_login", callback.display_name.lower()),
+                    callback.display_name,
+                ),
+                callback,
+            )
+
+        streamer = await self.bot.tapi.get_user(user_login=value)
+        if streamer is None and value.isdigit():
+            streamer = await self.bot.tapi.get_user(user_id=value)
+        if streamer is None:
+            raise commands.BadArgument(
+                f'Could not find configured Twitch streamer "{value}"'
+            )
+
+        callback = (
+            await self.bot.db.get_callback(streamer)
+            if alert_type == AlertType.status
+            else await self.bot.db.get_title_callback(streamer)
+        )
+        if callback is None or guild_id not in callback.alert_roles:
+            raise commands.BadArgument("Streamer not found for server")
+        return streamer, callback
+
     ##########################################################
 
     @commands.slash_command()
@@ -1012,9 +1066,10 @@ class CommandsCog(commands.Cog):
     async def streamers_delete_twitch(self, ctx: ApplicationCustomContext, streamer: str = commands.Param(autocomplete=twitch_streamer_autocomplete)):
         await ctx.response.defer()
         await self.bot.wait_until_db_ready()
-        streamer_obj = await self.bot.tapi.get_user(user_login=streamer)
+        streamer_obj, callback = await self.resolve_configured_twitch_streamer(
+            ctx, streamer
+        )
         channel_cache = await self.bot.db.get_channel_cache(streamer_obj)
-        callback = await self.bot.db.get_callback(streamer_obj)
         for channel_id in channel_cache.get("live_channels", []):
             channel = self.bot.get_channel(channel_id)
             if channel:
@@ -1194,8 +1249,12 @@ class CommandsCog(commands.Cog):
     @titlechanges_delete.sub_command(name="twitch", description="Remove title change alerts for a twitch streamer")
     async def titlechanges_delete_twitch(self, ctx: ApplicationCustomContext, streamer: str = commands.Param(autocomplete=twitch_streamertitles_autocomplete)):
         await ctx.response.defer()
-        streamer_obj = await self.bot.tapi.get_user(user_login=streamer)
-        await self.twitch_callback_deletion(ctx, streamer_obj, alert_type=AlertType.title)
+        streamer_obj, callback = await self.resolve_configured_twitch_streamer(
+            ctx, streamer, alert_type=AlertType.title
+        )
+        await self.twitch_callback_deletion(
+            ctx, streamer_obj, callback, alert_type=AlertType.title
+        )
         await ctx.send(f"{self.bot.emotes.success} Deleted title change alert for {streamer}")
 
     @titlechanges_group.sub_command_group(name="list")
