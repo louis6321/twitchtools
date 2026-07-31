@@ -13,7 +13,8 @@
 * Server specific manager roles to allow a role access to modify setup
 * Youtube livestream support
 * Youtube premiere support (toggleable)
-* Colour indictions of whether a stream is a YouTube or Twitch stream
+* Kick livestream support with signed webhooks and catch-up polling
+* Colour indications of whether a stream is a YouTube, Twitch, or Kick stream
 * Alert cooldown and message reuse for stream crashes
 
 
@@ -27,7 +28,7 @@
 * A domain that you control (Must support SSL)
 * Basic knowledge of python
 * Some command line experience
-* Knowledge of how to create twitch and discord developer applications
+* Knowledge of how to create Twitch, Kick, and Discord developer applications
 * Knowledge of how to use nginx or another reverse proxy
 
 
@@ -39,10 +40,12 @@
   * A twitch application
   * A discord bot token
   * A google API key with the YouTube data API enabled
+  * A Kick application client ID and client secret
   * Your mongodb connection string
   * Your callback URI (You must set this up in your domain DNS settings)
 - Install the required dependencies `pip3 install -r requirements.txt`
 - The webserver runs on port `18271` by default, so ensure your reverse proxy forwards your callback to that port. You can change this if necessary in the config
+- In your Kick application's settings, enable webhooks and set the webhook URL to `<callback_url>/kick/events` (for example, `https://example.com/kick/events`)
 - Finally, run the bot with `python3 main.py` and you should be good to go
 
 

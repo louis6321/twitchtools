@@ -1,5 +1,6 @@
 from .api_twitch import *
 from .api_youtube import *
+from .api_kick import *
 from .asset import *
 from .checks import *
 from .connection_state import CustomConnectionState

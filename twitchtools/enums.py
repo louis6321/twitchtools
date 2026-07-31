@@ -327,6 +327,14 @@ class YoutubeCallback(Enum):
     expiry_time: int
 
 
+class KickCallback(Enum):
+    _id: str
+    display_name: str
+    slug: str
+    alert_roles: dict[str, CallbackAlertInfo]
+    subscription_id: Optional[str]
+
+
 class TitleCallbackAlertInfo(Enum):
     role_id: int
     notif_channel_id: int
@@ -361,6 +369,19 @@ class YoutubeChannelCache(Enum):
     streams: dict[str, dict]
 
 
+class KickChannelCache(Enum):
+    alert_cooldown: int
+    slug: str
+    stream_id: str
+    is_live: bool
+    live_channels: list[int]
+    live_alerts: dict[str, int]
+    last_update: int
+    games: dict[str, int]
+    reusable_alerts: list[dict[str, int]]
+    triggered_guilds: list[str]
+
+
 class Emotes(Enum):
     error: str = "❌"
     success: str = "✅"
@@ -386,3 +407,4 @@ class YoutubeVideoType(Enum):
 class PlatformChoice(str, Enum):
     Youtube = "youtube"
     Twitch = "twitch"
+    Kick = "kick"

@@ -8,6 +8,7 @@ from os import getpid
 from textwrap import shorten
 from time import time
 from types import BuiltinFunctionType, CoroutineType, FunctionType, MethodType
+from typing import Union
 
 import disnake
 import psutil
@@ -18,11 +19,13 @@ from munch import munchify
 
 from main import TwitchCallBackBot
 from twitchtools import (AlertOrigin, AlertType, ApplicationCustomContext,
-                         Callback, Confirm, PartialUser, PartialYoutubeUser,
-                         PlatformChoice, SortableTextPaginator,
-                         SubscriptionError, SubscriptionType, TextPaginator,
-                         User, UserType, YoutubeCallback, YoutubeSubscription,
-                         YoutubeUser, check_channel_permissions,
+                         Callback, Confirm, KickCallback, KickUser,
+                         PartialKickUser, PartialUser,
+                         PartialYoutubeUser, PlatformChoice,
+                         SortableTextPaginator, SubscriptionError,
+                         SubscriptionType, TextPaginator, User, UserType,
+                         YoutubeCallback, YoutubeSubscription, YoutubeUser,
+                         check_channel_permissions,
                          has_guild_permissions, has_manage_permissions,
                          human_timedelta)
 
@@ -109,7 +112,11 @@ class CommandsCog(commands.Cog):
         yt_alert_count = 0
         for data in yt_callbacks.values():
             yt_alert_count += len(data.alert_roles.values())
-        botinfo = f"**🏠 Servers:** {len(self.bot.guilds)}\n**🤖 Bot Creation Date:** {DiscordTimezone(int(self.bot.user.created_at.timestamp()), TimestampOptions.long_date_short_time)}\n**🕑 Uptime:** {human_timedelta(datetime.utcfromtimestamp(self.bot._uptime), suffix=False)}\n**🏓 Latency:**  {int(self.bot.latency*1000)}ms\n**🕵️‍♀️ Owner{'s' if is_plural else ''}:** {owners}\n**<:Twitch:891703045908467763> Subscribed Twitch Streamers:** {len(callbacks.keys())}\n**<:Youtube:1034338274220703756> Subscribed YT Channels:** {len(yt_callbacks.keys())}\n**<:notaggy:891702828756766730> Twitch Notification Count:** {alert_count}\n**<:notaggy:891702828756766730> Youtube Notification Count:** {yt_alert_count}"
+        kick_callbacks = await self.bot.db.get_all_kick_callbacks()
+        kick_alert_count = sum(
+            len(data.alert_roles) for data in kick_callbacks.values()
+        )
+        botinfo = f"**🏠 Servers:** {len(self.bot.guilds)}\n**🤖 Bot Creation Date:** {DiscordTimezone(int(self.bot.user.created_at.timestamp()), TimestampOptions.long_date_short_time)}\n**🕑 Uptime:** {human_timedelta(datetime.utcfromtimestamp(self.bot._uptime), suffix=False)}\n**🏓 Latency:**  {int(self.bot.latency*1000)}ms\n**🕵️‍♀️ Owner{'s' if is_plural else ''}:** {owners}\n**<:Twitch:891703045908467763> Subscribed Twitch Streamers:** {len(callbacks.keys())}\n**<:Youtube:1034338274220703756> Subscribed YT Channels:** {len(yt_callbacks.keys())}\n**🟢 Subscribed Kick Channels:** {len(kick_callbacks)}\n**<:notaggy:891702828756766730> Twitch Notification Count:** {alert_count}\n**<:notaggy:891702828756766730> Youtube Notification Count:** {yt_alert_count}\n**<:notaggy:891702828756766730> Kick Notification Count:** {kick_alert_count}"
         embed.add_field(name="__Bot__", value=botinfo, inline=False)
         systeminfo = f"**<:python:879586023116529715> Python Version:** {sys.version.split()[0]}\n**<:discordpy:879586265014607893> Disnake Version:** {disnake.__version__}\n**<:microprocessor:879591544070488074> Process Memory Usage:** {psutil.Process(getpid()).memory_info().rss/1048576:.2f}MB"
         embed.add_field(name="__System__", value=systeminfo, inline=False)
@@ -355,6 +362,15 @@ class CommandsCog(commands.Cog):
         callbacks = await ctx.bot.db.get_all_callbacks()
         return [alert_info['display_name'] for alert_info in callbacks.values() if str(ctx.guild.id) in alert_info['alert_roles'].keys() and alert_info['display_name'].lower().startswith(user_input)][:25]
 
+    async def kick_streamer_autocomplete(ctx: ApplicationCustomContext, user_input: str):
+        callbacks = await ctx.bot.db.get_all_kick_callbacks()
+        return [
+            callback["display_name"]
+            for callback in callbacks.values()
+            if str(ctx.guild.id) in callback["alert_roles"]
+            and callback["display_name"].lower().startswith(user_input.lower())
+        ][:25]
+
     ##########################################################
 
     @commands.slash_command()
@@ -378,6 +394,13 @@ class CommandsCog(commands.Cog):
             return await self.addstreamer_youtube(ctx, streamer_name_or_id, notification_channel, alert_role=alert_role,
                 custom_live_message=custom_live_message, allow_youtube_premieres=allow_youtube_premieres,
                  title_match_phrase=title_match_phrase, show_cest_time=show_cest_time, mode=0)
+        elif platform == PlatformChoice.Kick:
+            return await self.addstreamer_kick(
+                ctx, streamer_name_or_id, notification_channel,
+                alert_role=alert_role, custom_live_message=custom_live_message,
+                title_match_phrase=title_match_phrase,
+                show_cest_time=show_cest_time, mode=0
+            )
         return await ctx.send(f"{self.bot.emotes.error} Invalid platform choice", ephemeral=True)
 
     @streamers_add.sub_command(name="mode_one", description="Only sends a dynamic live notification for a live stream")
@@ -392,6 +415,13 @@ class CommandsCog(commands.Cog):
             return await self.addstreamer_youtube(ctx, streamer_name_or_id, notification_channel, alert_role=alert_role,
             custom_live_message=custom_live_message, allow_youtube_premieres=allow_youtube_premieres,
              title_match_phrase=title_match_phrase, show_cest_time=show_cest_time, mode=1)
+        elif platform == PlatformChoice.Kick:
+            return await self.addstreamer_kick(
+                ctx, streamer_name_or_id, notification_channel,
+                alert_role=alert_role, custom_live_message=custom_live_message,
+                title_match_phrase=title_match_phrase,
+                show_cest_time=show_cest_time, mode=1
+            )
         return await ctx.send(f"{self.bot.emotes.error} Invalid platform choice", ephemeral=True)
 
     @streamers_add.sub_command(name="mode_two", description="Dynamic live notification + Persistent text channel reporting channel live status")
@@ -407,6 +437,14 @@ class CommandsCog(commands.Cog):
             return await self.addstreamer_youtube(ctx, streamer_name_or_id, notification_channel, alert_role=alert_role, 
                 status_channel=status_channel, custom_live_message=custom_live_message, allow_youtube_premieres=allow_youtube_premieres,
                 title_match_phrase=title_match_phrase, show_cest_time=show_cest_time, mode=2)
+        elif platform == PlatformChoice.Kick:
+            return await self.addstreamer_kick(
+                ctx, streamer_name_or_id, notification_channel,
+                alert_role=alert_role, status_channel=status_channel,
+                custom_live_message=custom_live_message,
+                title_match_phrase=title_match_phrase,
+                show_cest_time=show_cest_time, mode=2
+            )
         return await ctx.send(f"{self.bot.emotes.error} Invalid platform choice", ephemeral=True)
 
     async def addstreamer_twitch(self, ctx: ApplicationCustomContext, streamer_username: str,
@@ -539,6 +577,151 @@ class CommandsCog(commands.Cog):
         if show_cest_time:
             embed.add_field(name="Show CET/CEST Time",
                             value="Yes", inline=True)
+        await ctx.send(embed=embed)
+
+    async def addstreamer_kick(
+        self,
+        ctx: ApplicationCustomContext,
+        channel_slug_or_id: str,
+        notification_channel: TextChannel,
+        mode: int,
+        alert_role: Role = None,
+        status_channel: TextChannel = None,
+        custom_live_message: str = None,
+        title_match_phrase: str = None,
+        show_cest_time: bool = False,
+    ):
+        channel = None
+        if channel_slug_or_id.isdigit():
+            channel = await self.bot.kapi.get_user(
+                user_id=int(channel_slug_or_id)
+            )
+        if channel is None:
+            channel = await self.bot.kapi.get_user(slug=channel_slug_or_id)
+        if channel is None:
+            raise commands.BadArgument(
+                f"Could not locate Kick channel {channel_slug_or_id}!"
+            )
+
+        check_channel_permissions(ctx, channel=notification_channel)
+        if status_channel is not None:
+            check_channel_permissions(ctx, channel=status_channel)
+        if custom_live_message and len(custom_live_message) > 300:
+            raise commands.UserInputError(
+                "No more than 300 characters allowed for custom live message"
+            )
+
+        callback = await self.bot.db.get_kick_callback(channel) or {}
+        if callback.get("alert_roles", {}).get(str(ctx.guild.id)):
+            view = Confirm(ctx)
+            await ctx.response.send_message(
+                f"{channel.display_name} is already setup for this server! "
+                "Do you want to override the current settings?",
+                view=view,
+            )
+            await view.wait()
+            if not view.value:
+                for button in view.children:
+                    button.disabled = True
+                if view.value is False:
+                    await view.interaction.response.edit_message(
+                        content="Aborting override", view=view
+                    )
+                else:
+                    await ctx.edit_original_message(
+                        content="Aborting override", view=view
+                    )
+                return
+            for button in view.children:
+                button.disabled = True
+            await view.interaction.response.edit_message(view=view)
+
+        make_subscription = not callback
+        if make_subscription:
+            callback = {
+                "display_name": channel.display_name,
+                "slug": channel.slug,
+                "alert_roles": {},
+            }
+
+        alert_info = {
+            "mode": mode,
+            "notif_channel_id": notification_channel.id,
+            "role_id": None,
+        }
+        if alert_role == ctx.guild.default_role:
+            alert_info["role_id"] = "everyone"
+        elif isinstance(alert_role, Role):
+            alert_info["role_id"] = alert_role.id
+        if mode == 2:
+            alert_info["channel_id"] = status_channel.id
+        if custom_live_message:
+            alert_info["custom_message"] = custom_live_message
+        if title_match_phrase:
+            alert_info["title_match_phrase"] = title_match_phrase.lower()
+        if show_cest_time:
+            alert_info["show_cest_time"] = True
+        callback["alert_roles"][str(ctx.guild.id)] = alert_info
+        callback["display_name"] = channel.display_name
+        callback["slug"] = channel.slug
+        await self.bot.db.write_kick_callback(channel, callback)
+
+        if make_subscription:
+            if not ctx.response.is_done():
+                await ctx.response.defer()
+            try:
+                subscription = await self.bot.kapi.create_subscription(channel)
+                callback["subscription_id"] = subscription.id
+            except SubscriptionError:
+                await self.kick_callback_deletion(ctx, channel, callback)
+                raise
+            await self.bot.db.write_kick_callback(channel, callback)
+
+        stream = await self.bot.kapi.get_stream(
+            channel, origin=AlertOrigin.catchup
+        )
+        if stream is not None:
+            self.bot.queue.put_nowait(stream)
+        else:
+            channel.origin = AlertOrigin.catchup
+            if status_channel is not None:
+                await status_channel.edit(name="stream-offline")
+            self.bot.queue.put_nowait(channel)
+
+        embed = Embed(
+            title="Successfully added new Kick channel",
+            color=self.bot.colour,
+        )
+        embed.add_field(
+            name="Channel Name", value=channel.display_name, inline=True
+        )
+        embed.add_field(name="Channel ID", value=channel.id, inline=True)
+        embed.add_field(
+            name="Notification Channel",
+            value=notification_channel.mention,
+            inline=True,
+        )
+        if alert_role:
+            embed.add_field(name="Alert Role", value=alert_role, inline=True)
+        embed.add_field(name="Alert Mode", value=mode, inline=True)
+        if mode == 2:
+            embed.add_field(
+                name="Status Channel", value=status_channel.mention, inline=True
+            )
+        if custom_live_message:
+            embed.add_field(
+                name="Custom Alert Message",
+                value=custom_live_message,
+                inline=False,
+            )
+        if title_match_phrase:
+            embed.add_field(
+                name="Title Match Phrase", value=title_match_phrase, inline=True
+            )
+        if show_cest_time:
+            embed.add_field(
+                name="Show CET/CEST Time", value="Yes", inline=True
+            )
         await ctx.send(embed=embed)
 
     async def addstreamer_youtube(self, ctx: ApplicationCustomContext, channel_id_or_handle_or_display_name: str,
@@ -797,6 +980,30 @@ class CommandsCog(commands.Cog):
                                      "display_name": 0, "last_live": 1}, show_delete=True)
         await ctx.send(content=view.pages[0], view=view)
 
+    @streamers_list.sub_command(name="kick", description="List all active Kick streamer alerts setup in this server")
+    async def streamers_list_kick(self, ctx: ApplicationCustomContext):
+        await ctx.response.defer()
+        await self.bot.wait_until_db_ready()
+        callbacks = await self.bot.db.get_all_kick_callbacks()
+        if not callbacks:
+            return await ctx.send(
+                f"{self.bot.emotes.error} No Kick streamers configured for this server!"
+            )
+        for user_id, callback in callbacks.items():
+            channel = PartialKickUser(
+                user_id, callback.slug, callback.display_name
+            )
+            cache = await self.bot.db.get_kick_channel_cache(channel)
+            callback["last_live"] = cache.get("alert_cooldown", 0)
+        view = SortableTextPaginator(
+            ctx,
+            callbacks,
+            self.page_generator,
+            sorting_options={"display_name": 0, "last_live": 1},
+            show_delete=True,
+        )
+        await ctx.send(content=view.pages[0], view=view)
+
     @streamers.sub_command_group(name="delete")
     async def streamers_delete(self, ctx: ApplicationCustomContext):
         pass
@@ -855,6 +1062,48 @@ class CommandsCog(commands.Cog):
                         continue
         await self.youtube_callback_deletion(ctx, channel, callback)
         await ctx.send(f"{self.bot.emotes.success} Deleted live alerts for {channel.display_name}")
+
+    @streamers_delete.sub_command(name="kick", description="Remove live alerts for a Kick streamer")
+    async def streamers_delete_kick(
+        self,
+        ctx: ApplicationCustomContext,
+        streamer: str = commands.Param(autocomplete=kick_streamer_autocomplete),
+    ):
+        await ctx.response.defer()
+        callbacks = await self.bot.db.get_all_kick_callbacks()
+        matching_callback = next(
+            (
+                (user_id, callback)
+                for user_id, callback in callbacks.items()
+                if callback.display_name == streamer or callback.slug == streamer
+            ),
+            None,
+        )
+        if matching_callback is None:
+            channel = await self.bot.kapi.get_user(slug=streamer)
+            if channel is None:
+                raise commands.BadArgument("Kick streamer not found")
+            callback = await self.bot.db.get_kick_callback(channel)
+        else:
+            user_id, callback = matching_callback
+            channel = PartialKickUser(
+                user_id, callback.slug, callback.display_name
+            )
+
+        channel_cache = await self.bot.db.get_kick_channel_cache(channel)
+        for channel_id in channel_cache.get("live_channels", []):
+            discord_channel = self.bot.get_channel(channel_id)
+            if discord_channel and discord_channel.guild == ctx.guild:
+                try:
+                    if callback.alert_roles[str(ctx.guild.id)].mode == 0:
+                        await discord_channel.delete()
+                except (disnake.Forbidden, disnake.HTTPException):
+                    continue
+        await self.kick_callback_deletion(ctx, channel, callback)
+        await ctx.send(
+            f"{self.bot.emotes.success} Deleted live alerts for "
+            f"{channel.display_name}"
+        )
 
     ##########################################################
 
@@ -1069,6 +1318,44 @@ class CommandsCog(commands.Cog):
         else:
             await self.bot.db.write_yt_callback(channel, callback)
 
+    async def kick_callback_deletion(
+        self,
+        ctx: ApplicationCustomContext,
+        channel: Union[KickUser, PartialKickUser],
+        callback: KickCallback = None,
+    ):
+        await self.bot.wait_until_db_ready()
+        callback = munchify(
+            callback or await self.bot.db.get_kick_callback(channel)
+        )
+        if callback is None:
+            raise commands.BadArgument("Kick streamer not found")
+        try:
+            del callback.alert_roles[str(ctx.guild.id)]
+        except KeyError:
+            raise commands.BadArgument("Streamer not found for server")
+
+        if callback.alert_roles:
+            await self.bot.db.write_kick_callback(channel, callback)
+            return
+
+        self.bot.log.info(
+            f"Kick streamer {channel.display_name} is no longer enrolled "
+            "in any alerts, purging callback and cache"
+        )
+        if callback.get("subscription_id"):
+            try:
+                await self.bot.kapi.delete_subscription(
+                    callback.subscription_id
+                )
+            except SubscriptionError as error:
+                self.bot.log.warning(
+                    f"[Kick] Failed to delete subscription for "
+                    f"{channel.display_name}: {error}"
+                )
+        await self.bot.db.delete_kick_channel_cache(channel)
+        await self.bot.db.delete_kick_callback(channel)
+
     ##########################################################
 
     @commands.slash_command()
@@ -1130,6 +1417,63 @@ class CommandsCog(commands.Cog):
             await asyncio.sleep(0.25)
 
         await ctx.send(f"{self.bot.emotes.success} Recreated live subscriptions!")
+
+    @resubscribe.sub_command(name="kick", description="Owner Only: Recreate every Kick live-status subscription")
+    async def resubscribe_kick(self, ctx: ApplicationCustomContext):
+        await ctx.response.defer()
+        self.bot.log.info("[Kick] Running subscription recreation")
+        callbacks = await self.bot.db.get_all_kick_callbacks()
+        for user_id, callback in callbacks.items():
+            channel = PartialKickUser(
+                user_id, callback.slug, callback.display_name
+            )
+            if callback.get("subscription_id"):
+                try:
+                    await self.bot.kapi.delete_subscription(
+                        callback.subscription_id
+                    )
+                except SubscriptionError:
+                    pass
+            subscription = await self.bot.kapi.create_subscription(channel)
+            callback.subscription_id = subscription.id
+            await self.bot.db.write_kick_callback(channel, callback)
+            await asyncio.sleep(0.2)
+        await ctx.send(
+            f"{self.bot.emotes.success} Recreated Kick live subscriptions!"
+        )
+
+    @commands.slash_command(description="Fetch information about a Kick channel")
+    async def getkickuser(
+        self,
+        ctx: ApplicationCustomContext,
+        channel: str = commands.Param(
+            description="A Kick channel slug, URL, or broadcaster user ID"
+        ),
+    ):
+        await ctx.response.defer()
+        user = (
+            await self.bot.kapi.get_user(user_id=int(channel))
+            if channel.isdigit()
+            else await self.bot.kapi.get_user(slug=channel)
+        )
+        if user is None:
+            return await ctx.send(
+                f"{self.bot.emotes.error} Could not find Kick channel "
+                f'"{channel}"'
+            )
+        embed = Embed(
+            title="Kick Channel Info", timestamp=utcnow(), colour=self.bot.colour
+        )
+        embed.set_author(name=user.display_name, icon_url=user.avatar_url)
+        if user.avatar_url:
+            embed.set_thumbnail(url=user.avatar_url)
+        embed.add_field(name="Channel Slug", value=user.slug)
+        embed.add_field(name="Broadcaster ID", value=user.id)
+        if user.description:
+            embed.add_field(
+                name="Channel Description", value=user.description, inline=False
+            )
+        await ctx.send(embed=embed)
 
     @commands.slash_command(description="Get a youtube user/channel from their various unique identification. Only one option is required")
     async def getyoutubeuser(self, ctx: ApplicationCustomContext,

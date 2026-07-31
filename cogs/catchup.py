@@ -3,7 +3,8 @@ from typing import TYPE_CHECKING
 from disnake.ext import commands, tasks
 
 from twitchtools import (AlertOrigin, ApplicationCustomContext, Callback,
-                         PartialUser, PartialYoutubeUser, YoutubeCallback,
+                         KickCallback, PartialKickUser, PartialUser,
+                         PartialYoutubeUser, YoutubeCallback,
                          has_manage_permissions)
 from twitchtools.exceptions import (VideoNotFound, VideoNotStream,
                                     VideoStreamEnded)
@@ -19,10 +20,12 @@ class Catchup(commands.Cog):
         super().__init__()
         self.twitch_backup_checks.start()
         self.youtube_backup_checks.start()
+        self.kick_backup_checks.start()
 
     def cog_unload(self):
         self.twitch_backup_checks.cancel()
         self.youtube_backup_checks.cancel()
+        self.kick_backup_checks.cancel()
 
     @tasks.loop(seconds=120)
     async def twitch_backup_checks(self):
@@ -35,6 +38,11 @@ class Catchup(commands.Cog):
         await self.youtube_catchup()
         self.bot.log.debug("Ran youtube catchup")
 
+    @tasks.loop(seconds=120)
+    async def kick_backup_checks(self):
+        await self.kick_catchup()
+        self.bot.log.debug("Ran Kick catchup")
+
     @commands.slash_command()
     async def catchup(self, ctx: ApplicationCustomContext):
         pass
@@ -46,6 +54,7 @@ class Catchup(commands.Cog):
         await ctx.response.defer(ephemeral=True)
         await self.twitch_catchup()
         await self.youtube_catchup()
+        await self.kick_catchup()
         self.bot.log.info("Finished manual catchup")
         await ctx.send(f"{self.bot.emotes.success} Finished catchup!", ephemeral=True)
     
@@ -59,6 +68,15 @@ class Catchup(commands.Cog):
         
         youtube_filtered_callbacks = {s: c for s, c in (await self.bot.db.get_all_yt_callbacks()).items() if str(ctx.guild.id) in c.alert_roles.keys()}
         await self.youtube_catchup(youtube_filtered_callbacks)
+
+        kick_filtered_callbacks = {
+            streamer_id: callback
+            for streamer_id, callback in (
+                await self.bot.db.get_all_kick_callbacks()
+            ).items()
+            if str(ctx.guild.id) in callback.alert_roles
+        }
+        await self.kick_catchup(kick_filtered_callbacks)
         self.bot.log.info(f"Finished manual server catchup for {ctx.guild.name}")
         await ctx.send(f"{self.bot.emotes.success} Finished server catchup!", ephemeral=True)
 
@@ -169,6 +187,40 @@ class Catchup(commands.Cog):
                         video.user, callback_info
                     )
                 self.bot.queue.put_nowait(video)
+
+    async def kick_catchup(self, callbacks: dict[str, KickCallback] = None):
+        await self.bot.wait_until_ready()
+        await self.bot.wait_until_db_ready()
+        if callbacks is None:
+            callbacks = await self.bot.db.get_all_kick_callbacks()
+        if not callbacks:
+            return
+
+        streams = await self.bot.kapi.get_streams(
+            list(callbacks.keys()), origin=AlertOrigin.catchup
+        )
+        streams_by_user_id = {str(stream.user.id): stream for stream in streams}
+
+        for user_id, callback in callbacks.items():
+            stream = streams_by_user_id.get(str(user_id))
+            if stream is not None:
+                if (
+                    callback.display_name != stream.user.display_name
+                    or callback.get("slug") != stream.user.slug
+                ):
+                    callback.display_name = stream.user.display_name
+                    callback.slug = stream.user.slug
+                    await self.bot.db.write_kick_callback(stream.user, callback)
+                self.bot.queue.put_nowait(stream)
+            else:
+                self.bot.queue.put_nowait(
+                    PartialKickUser(
+                        user_id,
+                        callback.slug,
+                        callback.display_name,
+                        origin=AlertOrigin.catchup,
+                    )
+                )
 
 
 def setup(bot):

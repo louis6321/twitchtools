@@ -74,3 +74,63 @@ class YoutubeUser(PartialYoutubeUser):
         super().__init__(id, snippet["title"])
         self.description: str = snippet["description"]
         self.avatar_url: str = snippet["thumbnails"]["high"]["url"]
+
+
+class PartialKickUser:
+    def __init__(
+        self,
+        user_id: int,
+        slug: str,
+        display_name: str = None,
+        profile_picture: str = None,
+        origin: Optional[AlertOrigin] = AlertOrigin.unavailable,
+        ended_at: str = None,
+    ):
+        self.user_id: int = int(user_id)
+        self.id: int = self.user_id
+        self.slug: str = slug
+        self.login: str = slug
+        self.name: str = slug
+        self.username: str = slug
+        self.display_name: str = display_name or slug
+        self.profile_picture: Optional[str] = profile_picture
+        self.avatar_url: Optional[str] = profile_picture
+        self.avatar: Optional[str] = profile_picture
+        self.origin: AlertOrigin = origin
+        self.ended_at: Optional[datetime] = (
+            parser.parse(ended_at) if ended_at else None
+        )
+
+    def __str__(self) -> str:
+        return self.slug
+
+    def __repr__(self) -> str:
+        return f'<KickUser id={self.id} slug={self.slug!r}>'
+
+    def __eq__(self, other):
+        return isinstance(other, PartialKickUser) and self.id == other.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+
+class KickUser(PartialKickUser):
+    def __init__(
+        self,
+        user_id: int,
+        slug: str,
+        name: str = None,
+        profile_picture: str = None,
+        channel_description: str = None,
+        banner_picture: str = None,
+        **kwargs,
+    ):
+        super().__init__(
+            user_id,
+            slug,
+            display_name=name or slug,
+            profile_picture=profile_picture,
+            **kwargs,
+        )
+        self.description: Optional[str] = channel_description or None
+        self.banner_picture: Optional[str] = banner_picture or None

@@ -4,8 +4,9 @@ from typing import TYPE_CHECKING, Union
 
 from disnake.ext import commands
 
-from twitchtools import (PartialUser, PartialYoutubeUser, Stream, TitleEvent,
-                         User, YoutubeUser, YoutubeVideo)
+from twitchtools import (KickStream, KickUser, PartialKickUser, PartialUser,
+                         PartialYoutubeUser, Stream, TitleEvent, User,
+                         YoutubeUser, YoutubeVideo)
 
 if TYPE_CHECKING:
     from main import TwitchCallBackBot
@@ -66,6 +67,16 @@ class QueueHandler(commands.Cog):
                 if self.status_cog:
                     await self.status_cog.on_youtube_streamer_offline(item)
                 self.bot.dispatch("youtube_streamer_offline", item)
+
+            elif isinstance(item, KickStream):
+                if self.status_cog:
+                    await self.status_cog.on_kick_streamer_online(item)
+                self.bot.dispatch("kick_streamer_online", item)
+
+            elif isinstance(item, (KickUser, PartialKickUser)):
+                if self.status_cog:
+                    await self.status_cog.on_kick_streamer_offline(item)
+                self.bot.dispatch("kick_streamer_offline", item)
 
             else:
                 self.bot.log.warn(

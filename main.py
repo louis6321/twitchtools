@@ -16,8 +16,8 @@ from disnake.ext import commands
 from cogs.database import DB
 from cogs.webserver import RecieverWebServer
 from twitchtools import (BadAuthorization, CustomConnectionState, Emotes,
-                         PartialUser, PartialYoutubeUser, Ratelimit,
-                         http_twitch, http_youtube)
+                         PartialKickUser, PartialUser, PartialYoutubeUser,
+                         Ratelimit, http_kick, http_twitch, http_youtube)
 
 ACXT = TypeVar(
     "ACXT", bound="disnake.interactions.ApplicationCommandInteraction")
@@ -99,6 +99,7 @@ class TwitchCallBackBot(commands.InteractionBot):
 
         self.tapi = http_twitch(self, **config)
         self.yapi = http_youtube(self, **config)
+        self.kapi = http_kick(self, **config)
         self.token = config["bot_token"]
         self.colour = disnake.Colour.from_rgb(128, 0, 128)
         self.emotes = Emotes
@@ -110,7 +111,7 @@ class TwitchCallBackBot(commands.InteractionBot):
         # self.viewer_milestones_interval: int = 100
         # self.viewer_milestones_minimum: int = 100
 
-    async def ratelimit_request(self, streamer: Union[PartialYoutubeUser, PartialUser]):
+    async def ratelimit_request(self, streamer: Union[PartialYoutubeUser, PartialKickUser, PartialUser]):
         if self.ratelimits.get(streamer.id, None) is None:
             self.ratelimits[streamer.id] = Ratelimit(
                 calls=10, period=600, display_name=streamer.display_name)
@@ -127,6 +128,7 @@ class TwitchCallBackBot(commands.InteractionBot):
             await self.aSession.close()
         await self.tapi.close_session()
         await self.yapi.close_session()
+        await self.kapi.close_session()
         self.log.info("Shutting down...")
         await super().close()
 

@@ -9,10 +9,11 @@ from munch import munchify
 from pymongo.errors import ServerSelectionTimeoutError
 
 from twitchtools.enums import (Callback, ChannelCache, TitleCache,
-                               TitleCallback, YoutubeCallback,
-                               YoutubeChannelCache)
+                               KickCallback, KickChannelCache, TitleCallback,
+                               YoutubeCallback, YoutubeChannelCache)
 from twitchtools.exceptions import DBConnectionError
-from twitchtools.user import PartialUser, PartialYoutubeUser, User
+from twitchtools.user import (KickUser, PartialKickUser, PartialUser,
+                              PartialYoutubeUser, User)
 from twitchtools.video import YoutubeVideo
 
 if TYPE_CHECKING:
@@ -319,6 +320,78 @@ class DB(commands.Cog, name="Database Cog"):
     async def delete_yt_title_cache(self, channel: PartialYoutubeUser):
         await self.check_connect()
         return await self._db.yt_tcache.find_one_and_delete({"_id": channel.id})
+
+    async def get_kick_callback(self, channel: PartialKickUser) -> Optional[KickCallback]:
+        await self.check_connect()
+        callback = await self._db.kick_callbacks.find_one({"_id": str(channel.id)})
+        return munchify(callback) if callback else None
+
+    async def get_kick_callback_by_id(self, channel_id: int) -> Optional[KickCallback]:
+        await self.check_connect()
+        callback = await self._db.kick_callbacks.find_one({"_id": str(channel_id)})
+        return munchify(callback) if callback else None
+
+    async def write_kick_callback(
+        self, channel: PartialKickUser, callback: Union[KickCallback, dict]
+    ):
+        await self.check_connect()
+        data = dict(callback)
+        data.pop("_id", None)
+        result = await self._db.kick_callbacks.update_one(
+            {"_id": str(channel.id)}, {"$set": data}
+        )
+        if result.matched_count == 0:
+            data["_id"] = str(channel.id)
+            await self._db.kick_callbacks.insert_one(data)
+
+    async def get_all_kick_callbacks(self) -> dict[str, KickCallback]:
+        await self.check_connect()
+        cursor = self._db.kick_callbacks.find({"_id": {"$exists": True}})
+        count = await self._db.kick_callbacks.count_documents({})
+        documents = await cursor.to_list(length=count)
+        return {document["_id"]: munchify(document) for document in documents}
+
+    async def async_get_all_kick_callbacks(
+        self,
+    ) -> Generator[tuple[KickUser, KickCallback], None, None]:
+        await self.check_connect()
+        async for document in self._db.kick_callbacks.find(
+            {"_id": {"$exists": True}}
+        ):
+            channel = await self.bot.kapi.get_user(user_id=document["_id"])
+            if channel is not None:
+                yield channel, munchify(document)
+
+    async def delete_kick_callback(self, channel: PartialKickUser):
+        await self.check_connect()
+        return await self._db.kick_callbacks.find_one_and_delete(
+            {"_id": str(channel.id)}
+        )
+
+    async def get_kick_channel_cache(
+        self, channel: PartialKickUser
+    ) -> KickChannelCache:
+        await self.check_connect()
+        cache = await self._db.kick_ccache.find_one({"_id": str(channel.id)})
+        return munchify(cache or {})
+
+    async def write_kick_channel_cache(
+        self, channel: PartialKickUser, data: Union[KickChannelCache, dict]
+    ):
+        await self.check_connect()
+        cache = dict(data)
+        result = await self._db.kick_ccache.replace_one(
+            {"_id": str(channel.id)}, cache
+        )
+        if result.matched_count == 0:
+            cache["_id"] = str(channel.id)
+            await self._db.kick_ccache.insert_one(cache)
+
+    async def delete_kick_channel_cache(self, channel: PartialKickUser):
+        await self.check_connect()
+        return await self._db.kick_ccache.find_one_and_delete(
+            {"_id": str(channel.id)}
+        )
 
 def setup(bot):
     bot.add_cog(DB(bot))

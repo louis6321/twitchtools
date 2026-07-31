@@ -13,6 +13,20 @@ class YoutubeSubscription:
         self.channel: PartialYoutubeUser = channel
         self.secret: str = secret
 
+
+class KickSubscription:
+    def __init__(
+        self,
+        id: str,
+        broadcaster_user_id: int,
+        event: str = "livestream.status.updated",
+        version: int = 1,
+    ):
+        self.id: str = id
+        self.broadcaster_user_id: int = int(broadcaster_user_id)
+        self.event: str = event
+        self.version: int = int(version)
+
 class Subscription:
     def __init__(self, id: str, status: str, type: str, version: int, condition: dict, created_at: str, transport: dict, cost: int):
         self.id: str = id

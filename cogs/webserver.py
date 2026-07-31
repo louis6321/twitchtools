@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import base64
+import binascii
 from typing import TYPE_CHECKING
 
 from aiohttp import web
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
-from twitchtools import PartialUser, PartialYoutubeUser
+from twitchtools import PartialKickUser, PartialUser, PartialYoutubeUser
 from twitchtools.enums import AlertOrigin
 
 if TYPE_CHECKING:
@@ -75,6 +80,66 @@ class RecieverWebServer:
         await self.bot.db.write_notif_cache(notif_cache)
         return True
 
+    async def verify_kick_request(self, request: web.Request):
+        if self.allow_unverified_requests:
+            return True
+        await self.bot.wait_until_db_ready()
+        notification_cache = await self.bot.db.get_notif_cache()
+        try:
+            message_id = request.headers["Kick-Event-Message-Id"]
+            timestamp = request.headers["Kick-Event-Message-Timestamp"]
+            signature = request.headers["Kick-Event-Signature"]
+        except KeyError as error:
+            self.bot.log.info(f"[Kick] Request denied. Missing key {error}")
+            return False
+
+        if message_id in notification_cache:
+            return None
+
+        body = await request.read()
+        signed_message = (
+            message_id.encode("utf-8")
+            + b"."
+            + timestamp.encode("utf-8")
+            + b"."
+            + body
+        )
+        try:
+            decoded_signature = base64.b64decode(signature, validate=True)
+        except (ValueError, TypeError, binascii.Error) as error:
+            self.bot.log.info(f"[Kick] Invalid webhook signature: {error}")
+            return False
+
+        for force_key_refresh in (False, True):
+            try:
+                public_key_pem = await self.bot.kapi.get_public_key(
+                    force=force_key_refresh
+                )
+                public_key = serialization.load_pem_public_key(
+                    public_key_pem.encode("utf-8")
+                )
+                public_key.verify(
+                    decoded_signature,
+                    signed_message,
+                    padding.PKCS1v15(),
+                    hashes.SHA256(),
+                )
+                break
+            except InvalidSignature:
+                if force_key_refresh:
+                    self.bot.log.info("[Kick] Invalid webhook signature")
+                    return False
+            except (ValueError, TypeError) as error:
+                self.bot.log.error(f"[Kick] Invalid public key: {error}")
+                return False
+            except Exception as error:
+                self.bot.log.error(f"[Kick] Could not verify webhook: {error}")
+                return False
+
+        notification_cache.append(message_id)
+        await self.bot.db.write_notif_cache(notification_cache)
+        return True
+
     async def get_request(self, request: web.Request, callback_type: str, channel_id: str):
         if callback_type == "youtube":
             try:
@@ -123,6 +188,9 @@ class RecieverWebServer:
             self.bot.log.info(
                 f"[Youtube] Notification for {callback['display_name']}")
             return await self.youtube_notification(PartialYoutubeUser(channel_id, callback["display_name"]), data)
+
+        if callback_type == "kick":
+            return await self.kick_notification(request)
 
         else:
             callback = await self.bot.db.get_callback_by_id(channel_id)
@@ -215,4 +283,59 @@ class RecieverWebServer:
         # else:
         #     self.bot.queue.put_nowait(channel)
 
+        return web.Response(status=202)
+
+    async def kick_notification(self, request: web.Request):
+        verified = await self.verify_kick_request(request)
+        if verified is False:
+            return web.Response(status=401)
+        if verified is None:
+            self.bot.log.info("[Kick] Duplicate request ignored")
+            return web.Response(status=202)
+
+        event_type = request.headers.get("Kick-Event-Type")
+        if event_type != "livestream.status.updated":
+            self.bot.log.info(f"[Kick] Ignoring unsupported event {event_type!r}")
+            return web.Response(status=204)
+
+        try:
+            data = await request.json()
+            broadcaster = data["broadcaster"]
+            broadcaster_id = int(broadcaster["user_id"])
+        except (KeyError, TypeError, ValueError):
+            self.bot.log.info("[Kick] Notification was missing broadcaster data")
+            return web.Response(status=400)
+
+        callback = await self.bot.db.get_kick_callback_by_id(broadcaster_id)
+        if callback is None:
+            self.bot.log.info(f"[Kick] Request for {broadcaster_id} not found")
+            return web.Response(status=204)
+
+        if data.get("is_live"):
+            stream = await self.bot.kapi.get_stream(
+                user_id=broadcaster_id, origin=AlertOrigin.callback
+            )
+            if stream is not None:
+                self.bot.queue.put_nowait(stream)
+            else:
+                self.bot.log.warning(
+                    f"[Kick] {callback['display_name']} reported live before "
+                    "the livestream API reflected it; catch-up will retry"
+                )
+        else:
+            self.bot.queue.put_nowait(
+                PartialKickUser(
+                    broadcaster_id,
+                    broadcaster.get("channel_slug") or callback["slug"],
+                    broadcaster.get("username") or callback["display_name"],
+                    broadcaster.get("profile_picture"),
+                    origin=AlertOrigin.callback,
+                    ended_at=data.get("ended_at"),
+                )
+            )
+
+        self.bot.log.info(
+            f"[Kick] {callback['display_name']} => "
+            f"{'ONLINE' if data.get('is_live') else 'OFFLINE'}"
+        )
         return web.Response(status=202)
