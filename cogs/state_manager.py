@@ -237,7 +237,7 @@ class StreamStateManager(commands.Cog):
                 self.bot.log.info(
                     f"[Twitch] Callback received for "
                     f"{stream.user.display_name} while live, checking "
-                    "pending title-matched alerts")
+                    "pending title-filtered alerts")
             elif stream.origin == AlertOrigin.catchup:
                 await self.viewer_count_milestones(stream, callback, channel_cache)
             # Remove this return so that title phrase matching can run
@@ -402,7 +402,7 @@ class StreamStateManager(commands.Cog):
             if stream.origin == AlertOrigin.callback:
                 self.bot.log.info(
                     f"[Kick] Callback received for {stream.user.display_name} "
-                    "while live, checking pending title-matched alerts"
+                    "while live, checking pending title-filtered alerts"
                 )
         else:
             if on_cooldown:
@@ -506,8 +506,8 @@ class StreamStateManager(commands.Cog):
     async def send_live_alerts_and_channels(self, item: Union[Stream, YoutubeVideo, KickStream], embed: disnake.Embed, callback: Union[Callback, YoutubeCallback, KickCallback], channel_cache: Union[ChannelCache, YoutubeChannelCache, KickChannelCache]) -> tuple[list, list, list]:
         SelfOverride, DefaultRole, OverrideRole = self.get_overwrites()
         # Cooldown reuse only applies when a stream first goes online. If the
-        # stream is already live, untriggered guilds may now match a title
-        # phrase and need a fresh alert.
+        # stream is already live, untriggered guilds may now pass their title
+        # filters and need a fresh alert.
         on_cooldown = (
             not channel_cache.get("is_live", False)
             and self.on_cooldown(channel_cache.get("alert_cooldown", 0))
@@ -526,6 +526,11 @@ class StreamStateManager(commands.Cog):
                 if alert_info.title_match_phrase not in item.title.lower():
                     self.bot.log.info(
                         f"{self.get_platform_log_tag(item)} {item.user.display_name} title phrase for {guild.name} didn't match, skipping alert")
+                    continue
+            if alert_info.get("title_match_phrase_neg", None):
+                if alert_info.title_match_phrase_neg.lower() in item.title.lower():
+                    self.bot.log.info(
+                        f"{self.get_platform_log_tag(item)} {item.user.display_name} negative title phrase for {guild.name} matched, skipping alert")
                     continue
 
             if isinstance(item, YoutubeVideo):
@@ -567,6 +572,11 @@ class StreamStateManager(commands.Cog):
                                 if callback.alert_roles[str(alert_channel.guild.id)].title_match_phrase not in item.title.lower():
                                     self.bot.log.info(
                                         f"{self.get_platform_log_tag(item)} Didn't match title phrase for {guild.name}, skipping alert")
+                                    continue
+                            if callback.alert_roles[str(alert_channel.guild.id)].get("title_match_phrase_neg", None):
+                                if callback.alert_roles[str(alert_channel.guild.id)].title_match_phrase_neg.lower() in item.title.lower():
+                                    self.bot.log.info(
+                                        f"{self.get_platform_log_tag(item)} Matched negative title phrase for {guild.name}, skipping alert")
                                     continue
                             try:
                                 alert_message = await alert_channel.fetch_message(alert.get("message"))
@@ -1163,8 +1173,8 @@ class StreamStateManager(commands.Cog):
             channel_cache.last_update = int(time())
             await self.bot.db.write_channel_cache(stream.user, channel_cache)
 
-        # Re-evaluate guilds that were skipped when the stream's original
-        # title did not contain their configured match phrase.
+        # Re-evaluate guilds that were skipped by their configured title
+        # filters when the stream originally went live.
         await self.on_streamer_online(stream)
 
     async def viewer_count_milestones(self, stream: Stream, callback: Callback, channel_cache: ChannelCache):
@@ -1208,6 +1218,11 @@ class StreamStateManager(commands.Cog):
                     if alert_info.title_match_phrase not in stream.title.lower():
                         self.bot.log.info(
                             f"[Twitch] {stream.user.display_name} title phrase for {guild.name} didn't match, skipping alert")
+                        continue
+                if alert_info.get("title_match_phrase_neg", None):
+                    if alert_info.title_match_phrase_neg.lower() in stream.title.lower():
+                        self.bot.log.info(
+                            f"[Twitch] {stream.user.display_name} negative title phrase for {guild.name} matched, skipping alert")
                         continue
 
                 # Format role mention

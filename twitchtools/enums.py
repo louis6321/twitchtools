@@ -295,6 +295,7 @@ class CallbackAlertInfo(Enum):
     notif_channel_id: int
     custom_message: Optional[str]
     title_match_phrase: Optional[str]
+    title_match_phrase_neg: Optional[str]
 
 
 class Callback(Enum):
@@ -315,6 +316,7 @@ class YoutubeCallbackAlertInfo(Enum):
     custom_message: Optional[str]
     enable_premieres: str
     title_match_phrase: Optional[str]
+    title_match_phrase_neg: Optional[str]
 
 
 class YoutubeCallback(Enum):
