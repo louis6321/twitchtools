@@ -42,7 +42,7 @@ class StreamStateManager(commands.Cog):
         self.bot: TwitchCallBackBot = bot
         super().__init__()
         self.ignore_cooldowns: bool = False  # Used for debugging/development
-        self.footer_msg: str = "POGGIES"
+        self.footer_msg: str = "LIVE"
 
     async def on_title_change(self, event: TitleEvent):
         await self.bot.wait_until_ready()
